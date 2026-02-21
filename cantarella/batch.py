@@ -1,25 +1,20 @@
 import os
 import re
-import time
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from config import API_ID, API_HASH, ADMINS
 from database.db import db
 
-# Active batch sessions: uid -> {step, link, count, cancel}
 BATCH_STATE = {}
 CANCEL_FLAG = {}
 
 
 def parse_link(link):
-    """Parse t.me link and return (chat_id, msg_id, link_type)."""
     link = link.strip()
-    # Private: t.me/c/CHATID/MSGID
     m = re.match(r'https?://t\.me/c/(\d+)/(\d+)', link)
     if m:
-        return f"-100{m.group(1)}", int(m.group(2)), 'private'
-    # Public: t.me/USERNAME/MSGID
+        return f'-100{m.group(1)}', int(m.group(2)), 'private'
     m = re.match(r'https?://t\.me/([^/]+)/(\d+)', link)
     if m:
         return m.group(1), int(m.group(2)), 'public'
@@ -27,57 +22,133 @@ def parse_link(link):
 
 
 async def get_user_client(uid):
-    """Return a Pyrogram Client from the user's saved session string."""
     session_string = await db.get_session(uid)
     if not session_string:
         return None
     try:
-        client = Client(
-            name=f"usersession_{uid}",
+        uc = Client(
+            name=f'usersession_{uid}',
             api_id=API_ID,
             api_hash=API_HASH,
             session_string=session_string,
             in_memory=True,
         )
-        await client.start()
-        return client
+        await uc.start()
+        return uc
     except Exception as e:
-        print(f'User client error for {uid}: {e}')
+        print(f'User client error {uid}: {e}')
         return None
 
 
-async def forward_message(bot, user_client, chat_id, msg_id, dest_id, link_type):
-    """Fetch one message and forward/send it to dest_id."""
+async def send_message_to_user(bot, dest_id, msg, caption=None):
+    """
+    Re-send a downloaded file/text to dest_id using the bot.
+    msg is a Pyrogram Message object already fetched by user client.
+    """
+    try:
+        if msg.text:
+            await bot.send_message(dest_id, msg.text)
+            return True, 'text'
+
+        if msg.photo:
+            path = await msg.download()
+            await bot.send_photo(dest_id, path, caption=caption or msg.caption)
+            os.remove(path)
+            return True, 'photo'
+
+        if msg.video:
+            path = await msg.download()
+            await bot.send_video(
+                dest_id, path,
+                caption=caption or msg.caption,
+                duration=msg.video.duration,
+                width=msg.video.width,
+                height=msg.video.height,
+            )
+            os.remove(path)
+            return True, 'video'
+
+        if msg.document:
+            path = await msg.download()
+            await bot.send_document(
+                dest_id, path,
+                caption=caption or msg.caption,
+                file_name=msg.document.file_name,
+            )
+            os.remove(path)
+            return True, 'document'
+
+        if msg.audio:
+            path = await msg.download()
+            await bot.send_audio(
+                dest_id, path,
+                caption=caption or msg.caption,
+                duration=msg.audio.duration,
+                title=msg.audio.title,
+                performer=msg.audio.performer,
+            )
+            os.remove(path)
+            return True, 'audio'
+
+        if msg.voice:
+            path = await msg.download()
+            await bot.send_voice(dest_id, path)
+            os.remove(path)
+            return True, 'voice'
+
+        if msg.video_note:
+            path = await msg.download()
+            await bot.send_video_note(dest_id, path)
+            os.remove(path)
+            return True, 'video_note'
+
+        if msg.sticker:
+            await bot.send_sticker(dest_id, msg.sticker.file_id)
+            return True, 'sticker'
+
+        if msg.animation:
+            path = await msg.download()
+            await bot.send_animation(
+                dest_id, path,
+                caption=caption or msg.caption,
+            )
+            os.remove(path)
+            return True, 'animation'
+
+        return False, 'unsupported media type'
+
+    except Exception as e:
+        return False, str(e)[:80]
+
+
+async def process_one(bot, uc, chat_id, msg_id, dest_id, link_type):
     try:
         if link_type == 'private':
-            if not user_client:
-                return False, 'No session - use /login first'
-            msg = await user_client.get_messages(int(chat_id), msg_id)
+            if not uc:
+                return False, 'no session'
+            msg = await uc.get_messages(int(chat_id), msg_id)
         else:
             try:
                 msg = await bot.get_messages(chat_id, msg_id)
             except Exception:
-                if user_client:
-                    msg = await user_client.get_messages(chat_id, msg_id)
+                if uc:
+                    msg = await uc.get_messages(chat_id, msg_id)
                 else:
-                    return False, 'Cannot fetch public message'
+                    return False, 'cannot fetch'
 
         if not msg or getattr(msg, 'empty', False):
-            return False, 'Empty message'
+            return False, 'empty'
 
-        await bot.copy_message(
-            chat_id=int(dest_id),
-            from_chat_id=msg.chat.id,
-            message_id=msg.id,
-        )
-        return True, 'OK'
+        # Get user caption if set
+        user_caption = await db.get_caption(dest_id)
+        ok, reason = await send_message_to_user(bot, int(dest_id), msg, caption=user_caption)
+        return ok, reason
+
     except Exception as e:
-        return False, str(e)[:60]
+        return False, str(e)[:80]
 
 
-# ============================================================
-# /batch command - admin only
-# ============================================================
+# ── /batch ────────────────────────────────────────────────
 @Client.on_message(filters.private & filters.command('batch') & filters.user(ADMINS))
 async def batch_cmd(client: Client, message: Message):
     uid = message.from_user.id
@@ -91,7 +162,7 @@ async def batch_cmd(client: Client, message: Message):
     )
 
 
-# /single command - admin only
+# ── /single ───────────────────────────────────────────────
 @Client.on_message(filters.private & filters.command('single') & filters.user(ADMINS))
 async def single_cmd(client: Client, message: Message):
     uid = message.from_user.id
@@ -99,34 +170,33 @@ async def single_cmd(client: Client, message: Message):
     CANCEL_FLAG.pop(uid, None)
     await message.reply(
         '**Single Download**\n\n'
-        'Send the **link** of the message you want to save.\n'
+        'Send the **link** of the message to save.\n'
         'Example: `https://t.me/c/1234567890/5`'
     )
 
 
-# /cancel command
+# ── /cancel ───────────────────────────────────────────────
 @Client.on_message(filters.private & filters.command('cancel') & filters.user(ADMINS))
 async def cancel_cmd(client: Client, message: Message):
     uid = message.from_user.id
-    if uid in BATCH_STATE:
+    if uid in BATCH_STATE or uid in CANCEL_FLAG:
         CANCEL_FLAG[uid] = True
         BATCH_STATE.pop(uid, None)
-        await message.reply('Cancelled.')
+        await message.reply('Cancellation requested.')
     else:
         await message.reply('No active batch.')
 
 
-# ============================================================
-# Text handler - drives the conversation flow
-# ============================================================
+# ── Text handler ──────────────────────────────────────────
 @Client.on_message(
     filters.private
     & filters.text
     & filters.user(ADMINS)
-    & ~filters.command(['batch', 'single', 'cancel', 'start', 'help', 'login',
-                        'logout', 'myplan', 'premium', 'setchat', 'set_thumb',
-                        'view_thumb', 'del_thumb', 'set_caption', 'see_caption',
-                        'del_caption', 'set_del_word', 'rem_del_word',
+    & ~filters.command(['batch', 'single', 'cancel', 'start', 'help',
+                        'login', 'logout', 'myplan', 'premium', 'setchat',
+                        'set_thumb', 'view_thumb', 'del_thumb',
+                        'set_caption', 'see_caption', 'del_caption',
+                        'set_del_word', 'rem_del_word',
                         'set_repl_word', 'rem_repl_word', 'cmd'])
 )
 async def batch_text_handler(client: Client, message: Message):
@@ -137,76 +207,60 @@ async def batch_text_handler(client: Client, message: Message):
     state = BATCH_STATE[uid]
     step = state.get('step')
 
-    # ---- SINGLE: waiting for link ----
+    # ── SINGLE ─────────────────────────────────────────────
     if step == 'WAITING_SINGLE_LINK':
         link = message.text.strip()
         chat_id, msg_id, link_type = parse_link(link)
         if not chat_id:
             return await message.reply('Invalid link. Try again or /cancel.')
-
         BATCH_STATE.pop(uid, None)
-        status = await message.reply('Processing...')
-
-        if link_type == 'private':
-            uc = await get_user_client(uid)
-        else:
-            uc = None
-
-        ok, reason = await forward_message(client, uc, chat_id, msg_id, message.chat.id, link_type)
+        status = await message.reply('Fetching...')
+        uc = await get_user_client(uid) if link_type == 'private' else None
+        ok, reason = await process_one(client, uc, chat_id, msg_id, message.chat.id, link_type)
         if uc:
             try:
                 await uc.stop()
             except Exception:
                 pass
-
-        if ok:
-            await status.edit('Done.')
-        else:
-            await status.edit(f'Failed: {reason}')
+        await status.edit('Done.' if ok else f'Failed: {reason}')
         return
 
-    # ---- BATCH: waiting for start link ----
+    # ── BATCH step 1: get link ─────────────────────────────
     if step == 'WAITING_LINK':
         link = message.text.strip()
         chat_id, msg_id, link_type = parse_link(link)
         if not chat_id:
             return await message.reply('Invalid link. Try again or /cancel.')
-
         state.update({'step': 'WAITING_COUNT', 'chat_id': chat_id,
                       'msg_id': msg_id, 'link_type': link_type})
-        await message.reply('How many messages to download from this link?')
+        await message.reply('How many messages to download from this link? (max 200)')
         return
 
-    # ---- BATCH: waiting for count ----
+    # ── BATCH step 2: get count + run ──────────────────────
     if step == 'WAITING_COUNT':
         if not message.text.strip().isdigit():
             return await message.reply('Send a valid number. Try again or /cancel.')
-
         count = int(message.text.strip())
         if count < 1 or count > 200:
-            return await message.reply('Number must be between 1 and 200.')
+            return await message.reply('Number must be 1-200.')
 
-        # Check daily limit for non-premium users
         blocked = await db.check_limit(uid)
         if blocked:
             BATCH_STATE.pop(uid, None)
-            return await message.reply(
-                'Daily limit reached (10 files / 24h). Upgrade to premium for unlimited access.'
-            )
+            return await message.reply('Daily limit reached (10 files/24h). Upgrade to premium.')
 
         chat_id = state['chat_id']
         start_id = state['msg_id']
         link_type = state['link_type']
         BATCH_STATE.pop(uid, None)
 
-        status = await message.reply(f'Starting batch: 0/{count}')
+        status = await message.reply(f'Starting batch: 0/{count} | Success: 0 | Failed: 0')
 
+        uc = None
         if link_type == 'private':
             uc = await get_user_client(uid)
             if not uc:
                 return await status.edit('Login required for private links. Use /login first.')
-        else:
-            uc = None
 
         success = 0
         failed = 0
@@ -215,21 +269,23 @@ async def batch_text_handler(client: Client, message: Message):
         try:
             for i in range(count):
                 if CANCEL_FLAG.get(uid):
-                    await status.edit(f'Cancelled at {i}/{count}. Success: {success}')
+                    await status.edit(f'Cancelled at {i}/{count} | Success: {success} | Failed: {failed}')
                     break
-
                 mid = start_id + i
-                ok, reason = await forward_message(client, uc, chat_id, mid,
-                                                   message.chat.id, link_type)
+                ok, reason = await process_one(client, uc, chat_id, mid,
+                                               message.chat.id, link_type)
                 if ok:
                     success += 1
                     await db.add_traffic(uid)
                 else:
                     failed += 1
+                    print(f'[batch] msg {mid} failed: {reason}')
 
                 if (i + 1) % 5 == 0 or (i + 1) == count:
                     try:
-                        await status.edit(f'Progress: {i+1}/{count} | Success: {success} | Failed: {failed}')
+                        await status.edit(
+                            f'Progress: {i+1}/{count} | Success: {success} | Failed: {failed}'
+                        )
                     except Exception:
                         pass
 
