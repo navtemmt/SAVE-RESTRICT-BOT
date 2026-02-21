@@ -111,8 +111,8 @@ class Bot(Client):
             pass
         await asyncio.shield(super().stop())
         logger.info("Bot stopped cleanly"),
-            BotCommand("batch", "Batch download"),
-            BotCommand("single", "Single download")
+        BotCommand("batch", "Batch download"),
+        BotCommand("single", "Single download")
 
     async def set_bot_commands_list(self):
         commands = [
