@@ -23,13 +23,14 @@ IST = timezone(timedelta(hours=5, minutes=30))
 USER_CACHE = set()
 
 LOGO = r"""
-  ██████╗  ██╗  ██╗  █████╗  ███╗   ██╗ ██████╗   █████╗  ██╗      
-  ██╔══██╗ ██║  ██║ ██╔══██╗ ████╗  ██║ ██╔══██╗ ██╔══██╗ ██║      
-  ██║  ██║ ███████║ ███████║ ██╔██╗ ██║ ██████╔╝ ███████║ ██║      
-  ██║  ██║ ██╔══██║ ██╔══██║ ██║╚██╗██║ ██╔═══╝  ██╔══██║ ██║      
+  ██████╗  ██╗  ██╗  █████╗  ███╗   ██╗ ██████╗   █████╗  ██╗
+  ██╔══██╗ ██║  ██║ ██╔══██╗ ████╗  ██║ ██╔══██╗ ██╔══██╗ ██║
+  ██║  ██║ ███████║ ███████║ ██╔██╗ ██║ ██████╔╝ ███████║ ██║
+  ██║  ██║ ██╔══██║ ██╔══██║ ██║╚██╗██║ ██╔═══╝  ██╔══██║ ██║
   ██████╔╝ ██║  ██║ ██║  ██║ ██║ ╚████║ ██║      ██║  ██║ ███████
-    𝙱𝙾𝚃 𝚆𝙾𝚁𝙺𝙸𝙽𝙶 𝙿𝚁𝙾𝙿𝙴𝚁𝙻𝚈....
+    BOT WORKING PROPERLY....
 """
+
 
 class Bot(Client):
     def __init__(self):
@@ -39,7 +40,7 @@ class Bot(Client):
             api_hash=API_HASH,
             bot_token=BOT_TOKEN,
             plugins=dict(root="cantarella"),
-            workers=10, 
+            workers=10,
             sleep_threshold=15,
             max_concurrent_transmissions=5,
             ipv6=False,
@@ -67,7 +68,7 @@ class Bot(Client):
         while True:
             try:
                 await super().start()
-                break # Success!
+                break  # Success!
             except FloodWait as e:
                 wait_time = int(e.value) + 10
                 logger.warning(f"FLOOD_WAIT detected during login. Sleeping for {wait_time}s...")
@@ -89,13 +90,12 @@ class Bot(Client):
         # 4. Startup notification
         now = datetime.datetime.now(IST)
         startup_text = (
-            f"<b><i>🤖 Bot Successfully Started ♻️</i></b>\n\n"
-            f"<b>Bot:</b> @{me.username}\n"
-            f"<b>Users:</b> <code>{user_count} / 200</code>\n"
-            f"<b>Time:</b> <code>{now.strftime('%I:%M %p')} IST</code>\n\n"
-            f"<b>Developed by @cantarellabots</b>"
+            f"**_Bot Successfully Started_**\n\n"
+            f"**Bot:** @{me.username}\n"
+            f"**Users:** `{user_count} / 200`\n"
+            f"**Time:** `{now.strftime('%I:%M %p')} IST`\n\n"
+            f"**Developed by @cantarellabots**"
         )
-
         try:
             await self.send_message(LOG_CHANNEL, startup_text)
             logger.info("Startup log sent.")
@@ -106,13 +106,11 @@ class Bot(Client):
 
     async def stop(self, *args):
         try:
-            await self.send_message(LOG_CHANNEL, "<b><i>❌ Bot is going Offline</i></b>")
+            await self.send_message(LOG_CHANNEL, "**_Bot is going Offline_**")
         except:
             pass
         await asyncio.shield(super().stop())
-        logger.info("Bot stopped cleanly"),
-        BotCommand("batch", "Batch download"),
-        BotCommand("single", "Single download")
+        logger.info("Bot stopped cleanly")
 
     async def set_bot_commands_list(self):
         commands = [
@@ -121,6 +119,8 @@ class Bot(Client):
             BotCommand("login", "Login"),
             BotCommand("logout", "Logout"),
             BotCommand("cancel", "Cancel current action"),
+            BotCommand("batch", "Batch download"),
+            BotCommand("single", "Single download"),
             BotCommand("myplan", "Check your plan"),
             BotCommand("premium", "Premium info"),
             BotCommand("setchat", "Set target chat"),
@@ -137,38 +137,39 @@ class Bot(Client):
         ]
         await self.set_bot_commands(commands)
 
+
 BotInstance = Bot()
+
 
 @BotInstance.on_message(filters.private & filters.incoming, group=-1)
 async def new_user_log(bot: Client, message: Message):
     user = message.from_user
     if not user or user.id in USER_CACHE:
         return
-
     if not await db.is_user_exist(user.id):
         await db.add_user(user.id, user.first_name)
-        
         now = datetime.datetime.now(IST)
         log_text = (
-            f"<b>#NewUser 👤</b>\n"
-            f"<b>User:</b> {user.mention}\n"
-            f"<b>ID:</b> <code>{user.id}</code>\n"
-            f"<b>Time:</b> {now.strftime('%I:%M %p')} IST"
+            f"**#NewUser**\n"
+            f"**User:** {user.mention}\n"
+            f"**ID:** `{user.id}`\n"
+            f"**Time:** {now.strftime('%I:%M %p')} IST"
         )
         try:
             await bot.send_message(LOG_CHANNEL, log_text)
         except:
             pass
-    
     USER_CACHE.add(user.id)
+
 
 @BotInstance.on_message(filters.command("cmd") & filters.user(ADMINS))
 async def update_commands(bot: Client, message: Message):
     try:
         await bot.set_bot_commands_list()
-        await message.reply_text("✅ Commands menu updated!")
+        await message.reply_text("Commands menu updated!")
     except Exception as e:
-        await message.reply_text(f"❌ Error: {e}")
+        await message.reply_text(f"Error: {e}")
+
 
 if __name__ == "__main__":
     BotInstance.run()
